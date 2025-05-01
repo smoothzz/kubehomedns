@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -57,28 +58,53 @@ type CFListDNSRecordsResponseSingle struct {
 	Result CFListDNSRecordsResult `json:"result"`
 }
 
-func CFListDNSRecords(apiKey string, zone *ResourceContainer) (*CFListDNSRecordsResponse, error) {
-	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records", zone.ID)
+var client = &http.Client{
+	Timeout: 10 * time.Second,
+}
 
-	// Create a new HTTP request
-	req, err := http.NewRequest("GET", url, nil)
+func DoJSONRequest(ctx context.Context, method, url string, jsonData []byte, apiKey string, headers map[string]string) (*http.Response, error) {
+	var body io.Reader
+	if jsonData != nil {
+		body = bytes.NewBuffer(jsonData)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set the necessary headers
-	req.Header.Set("Authorization", "Bearer "+apiKey) // Use API Token
-	req.Header.Set("Content-Type", "application/json")
+	// Default headers - validation if there is apiKey
+	// If apiKey is empty, set only Content-Type
+	if apiKey == "" {
+		req.Header.Set("Content-Type", "application/json")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
+	}
 
-	// Make the HTTP request
-	client := &http.Client{}
+	// Set additional headers if any
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
 	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+
+	return resp, nil
+}
+
+func CFListDNSRecords(apiKey string, zone *ResourceContainer) (*CFListDNSRecordsResponse, error) {
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records", zone.ID)
+
+	ctx := context.Background()
+	resp, err := DoJSONRequest(ctx, "GET", url, nil, apiKey, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Check for a successful response
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to list DNS records: %s", resp.Status)
 	}
@@ -94,25 +120,13 @@ func CFListDNSRecords(apiKey string, zone *ResourceContainer) (*CFListDNSRecords
 func CFListDNSRecordById(apiKey string, zone *ResourceContainer, recordID string) (*CFListDNSRecordsResponseSingle, error) {
 	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zone.ID, recordID)
 
-	// Create a new HTTP request
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set the necessary headers
-	req.Header.Set("Authorization", "Bearer "+apiKey) // Use API Token
-	req.Header.Set("Content-Type", "application/json")
-
-	// Make the HTTP request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	ctx := context.Background()
+	resp, err := DoJSONRequest(ctx, "GET", url, nil, apiKey, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Check for a successful response
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to list DNS records: %s", resp.Status)
 	}
@@ -136,25 +150,13 @@ func CFCreateDNSRecord(apiKey string, zone *ResourceContainer, record DNSRecord)
 		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
-	// Create a new HTTP request
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set the necessary headers
-	req.Header.Set("Authorization", "Bearer "+apiKey) // Use API Token
-	req.Header.Set("Content-Type", "application/json")
-
-	// Make the HTTP request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	ctx := context.Background()
+	resp, err := DoJSONRequest(ctx, "POST", url, jsonData, apiKey, nil)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Check for a successful response
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to create DNS record: %s", resp.Status)
 	}
@@ -165,22 +167,15 @@ func CFCreateDNSRecord(apiKey string, zone *ResourceContainer, record DNSRecord)
 func GetPublicIP() string {
 	url := "https://api.ipify.org?format=json"
 
-	client := &http.Client{}
-
-	req, err := http.NewRequest("GET", url, nil)
+	ctx := context.Background()
+	resp, err := DoJSONRequest(ctx, "GET", url, nil, "", nil)
 	if err != nil {
-		log.Fatalf("Error creating request: %v\n", err)
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Fatalf("Error sending request: %v\n", err)
+		return fmt.Sprintf("Error sending request: %v\n", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Fatalf("Error: received status code %d\n", resp.StatusCode)
+		return fmt.Sprintf("failed to retrieve the public IP: %s", resp.Status)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
@@ -210,25 +205,13 @@ func CFUpdateDNSRecord(apiKey string, zone *ResourceContainer, recordName string
 		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
-	// Create a new HTTP request
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set the necessary headers
-	req.Header.Set("Authorization", "Bearer "+apiKey) // Use API Token
-	req.Header.Set("Content-Type", "application/json")
-
-	// Make the HTTP request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	ctx := context.Background()
+	resp, err := DoJSONRequest(ctx, "PUT", url, jsonData, apiKey, nil)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Check for a successful response
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to update DNS record: %s", resp.Status)
 	}
@@ -248,25 +231,13 @@ func CFUpdateDNSRecord(apiKey string, zone *ResourceContainer, recordName string
 func CFDeleteDNSRecord(apiKey string, zone *ResourceContainer, recordID string) error {
 	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zone.ID, recordID)
 
-	// Create a new HTTP request
-	req, err := http.NewRequest("DELETE", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set the necessary headers
-	req.Header.Set("Authorization", "Bearer "+apiKey) // Use API Token
-	req.Header.Set("Content-Type", "application/json")
-
-	// Make the HTTP request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	ctx := context.Background()
+	resp, err := DoJSONRequest(ctx, "DELETE", url, nil, apiKey, nil)
 	if err != nil {
 		return fmt.Errorf("failed to make request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Check for a successful response
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to delete DNS record: %s", resp.Status)
 	}
@@ -353,7 +324,6 @@ func InitialClientSet() *kubernetes.Clientset {
 	}
 	flag.Parse()
 
-	// use the current context in kubeconfig
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
 		fmt.Printf("error getting cluster config from flags: %s\n", err.Error())
@@ -363,7 +333,6 @@ func InitialClientSet() *kubernetes.Clientset {
 		}
 	}
 
-	// create the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		panic(err.Error())
@@ -377,7 +346,7 @@ func watchIngresses(clientset *kubernetes.Clientset, cloudflareAPIKey, cloudflar
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
 		ingressList, err := clientset.NetworkingV1().Ingresses("").List(ctx, metav1.ListOptions{})
-		cancel() // cancel context promptly after use
+		cancel()
 
 		if err != nil {
 			fmt.Printf("Error listing ingresses: %v\n", err)
@@ -405,7 +374,7 @@ func watchIngLabels(clientset *kubernetes.Clientset, cloudflareAPIKey, cloudflar
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
 		ingressList, err := clientset.NetworkingV1().Ingresses("").List(ctx, metav1.ListOptions{})
-		cancel() // cancel context promptly after use
+		cancel()
 
 		if err != nil {
 			fmt.Printf("Error listing ingresses: %v\n", err)
