@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    labels:
+        app: kubehomedns
+    name: kubehomedns
+    namespace: kubehomedns
+spec:
+    replicas: 1
+    selector:
+        matchLabels:
+          app: kubehomedns
+    strategy: {}
+    template:
+        metadata:
+          labels:
+            app: kubehomedns
+        spec:
+            containers:
+            - name: kubehomedns
+              image: smoothzz/kubehomedns:1.0.1
+              resources: {}
+status: {}
