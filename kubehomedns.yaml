@@ -1,23 +1,85 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubehomedns-sa
+  namespace: kubehomedns
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ingress-editor
+rules:
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ingress-editor-binding
+subjects:
+- kind: ServiceAccount
+  name: kubehomedns-sa
+  namespace: kubehomedns
+roleRef:
+  kind: ClusterRole
+  name: ingress-editor
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudflare-credentials
+  namespace: kubehomedns
+stringData:
+  cloudflare_api_key: YOUR_API_KEY_HERE
+  cloudflare_zone_id: YUOR_ZONE_ID_HERE
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-    labels:
-        app: kubehomedns
-    name: kubehomedns
-    namespace: kubehomedns
+  labels:
+    app: kubehomedns
+  name: kubehomedns
+  namespace: kubehomedns
 spec:
-    replicas: 1
-    selector:
-        matchLabels:
-          app: kubehomedns
-    strategy: {}
-    template:
-        metadata:
-          labels:
-            app: kubehomedns
-        spec:
-            containers:
-            - name: kubehomedns
-              image: smoothzz/kubehomedns:1.0.1
-              resources: {}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubehomedns
+  strategy: {}
+  template:
+    metadata:
+      labels:
+        app: kubehomedns
+    spec:
+      containers:
+      - name: kubehomedns
+        image: smoothzz/kubehomedns:1.0.3
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        env:
+        - name: CLOUDFLARE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: cloudflare-credentials
+              key: cloudflare_api_key
+        - name: CLOUDFLARE_ZONE_ID
+          valueFrom:
+            secretKeyRef:
+              name: cloudflare-credentials
+              key: cloudflare_zone_id
 status: {}
