@@ -7,12 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"log"
 	"net/http"
 	"path/filepath"
 	"time"
 
+	"github.com/smoothzz/kubehomedns/logger"
+	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -70,7 +70,8 @@ func DoJSONRequest(ctx context.Context, method, url string, jsonData []byte, api
 
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		logger.Logger.Error("Failed to create request", zap.Error(err))
+		return nil, err
 	}
 
 	// Default headers - validation if there is apiKey
@@ -89,7 +90,8 @@ func DoJSONRequest(ctx context.Context, method, url string, jsonData []byte, api
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		logger.Logger.Error("Failed to send request", zap.Error(err))
+		return nil, err
 	}
 
 	return resp, nil
@@ -101,17 +103,20 @@ func CFListDNSRecords(apiKey string, zone *ResourceContainer) (*CFListDNSRecords
 	ctx := context.Background()
 	resp, err := DoJSONRequest(ctx, "GET", url, nil, apiKey, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
+		logger.Logger.Error("Failed to make request", zap.Error(err))
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to list DNS records: %s", resp.Status)
+		logger.Logger.Error("Failed to list DNS records", zap.String("status", resp.Status))
+		return nil, err
 	}
 
 	var response CFListDNSRecordsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		logger.Logger.Error("Failed to decode response", zap.Error(err))
+		return nil, err
 	}
 
 	return &response, nil
@@ -123,16 +128,19 @@ func CFListDNSRecordById(apiKey string, zone *ResourceContainer, recordID string
 	ctx := context.Background()
 	resp, err := DoJSONRequest(ctx, "GET", url, nil, apiKey, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
+		logger.Logger.Error("Failed to make request", zap.Error(err))
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to list DNS records: %s", resp.Status)
+		logger.Logger.Error("Failed to list DNS records", zap.String("status", resp.Status))
+		return nil, err
 	}
 	var response CFListDNSRecordsResponseSingle
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		logger.Logger.Error("Failed to decode response", zap.Error(err))
+		return nil, err
 	}
 	return &response, nil
 }
@@ -140,55 +148,68 @@ func CFListDNSRecordById(apiKey string, zone *ResourceContainer, recordID string
 func CFCreateDNSRecord(apiKey string, zone *ResourceContainer, record DNSRecord) error {
 	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records", zone.ID)
 
+	ip, err := GetPublicIP()
+	if err != nil {
+		logger.Logger.Error("Failed to get public IP", zap.Error(err))
+		return err
+	}
+
 	recordData := map[string]interface{}{
 		"type":    "A",
 		"name":    record.Name,
-		"content": GetPublicIP(),
+		"content": ip,
 	}
 	jsonData, err := json.Marshal(recordData)
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %w", err)
+		logger.Logger.Error("Failed to marshal JSON", zap.Error(err))
+		return err
 	}
 
 	ctx := context.Background()
 	resp, err := DoJSONRequest(ctx, "POST", url, jsonData, apiKey, nil)
 	if err != nil {
-		return fmt.Errorf("failed to make request: %w", err)
+		logger.Logger.Error("Failed to make request", zap.Error(err))
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to create DNS record: %s", resp.Status)
+		logger.Logger.Error("Failed to create DNS record", zap.String("status", resp.Status))
+		return nil
 	}
 
 	return nil
 }
 
-func GetPublicIP() string {
+func GetPublicIP() (string, error) {
 	url := "https://api.ipify.org?format=json"
 
 	ctx := context.Background()
 	resp, err := DoJSONRequest(ctx, "GET", url, nil, "", nil)
 	if err != nil {
-		return fmt.Sprintf("Error sending request: %v\n", err)
+		logger.Logger.Error("Error sending request", zap.Error(err))
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf("failed to retrieve the public IP: %s", resp.Status)
+		logger.Logger.Error("Error response from API", zap.String("status", resp.Status))
+		return "", fmt.Errorf("error response from API: %s", resp.Status)
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatalf("Error reading response body: %v\n", err)
+		logger.Logger.Error("Error reading response body", zap.Error(err))
+		return "", err
 	}
 
 	var ipResponse IPResponse
 	if err := json.Unmarshal(body, &ipResponse); err != nil {
-		log.Fatalf("Error unmarshalling JSON: %v\n", err)
+		logger.Logger.Error("Error unmarshalling JSON", zap.Error(err))
+		return "", err
 	}
 
-	return ipResponse.IP
+	return ipResponse.IP, nil
 }
 
 func CFUpdateDNSRecord(apiKey string, zone *ResourceContainer, recordName string, recordID string, newContent string) error {
@@ -202,27 +223,31 @@ func CFUpdateDNSRecord(apiKey string, zone *ResourceContainer, recordName string
 
 	jsonData, err := json.Marshal(recordData)
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %w", err)
+		logger.Logger.Error("Failed to marshal JSON", zap.Error(err))
+		return err
 	}
 
 	ctx := context.Background()
 	resp, err := DoJSONRequest(ctx, "PUT", url, jsonData, apiKey, nil)
 	if err != nil {
-		return fmt.Errorf("failed to make request: %w", err)
+		logger.Logger.Error("Failed to make request", zap.Error(err))
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to update DNS record: %s", resp.Status)
+		logger.Logger.Error("Failed to update DNS record", zap.String("status", resp.Status))
+		return nil
 	}
 
 	var response CFListDNSRecordsResponseSingle
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
+		logger.Logger.Error("Failed to decode response", zap.Error(err))
+		return err
 	}
 
 	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("Record %s updated successfully, new content: %s!\n", response.Result.Name, response.Result.Content)
+		logger.Logger.Info("DNS record updated successfully", zap.String("record_name", response.Result.Name), zap.String("new_content", response.Result.Content))
 	}
 
 	return nil
@@ -234,12 +259,14 @@ func CFDeleteDNSRecord(apiKey string, zone *ResourceContainer, recordID string) 
 	ctx := context.Background()
 	resp, err := DoJSONRequest(ctx, "DELETE", url, nil, apiKey, nil)
 	if err != nil {
-		return fmt.Errorf("failed to make request: %w", err)
+		logger.Logger.Error("Failed to make request", zap.Error(err))
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to delete DNS record: %s", resp.Status)
+		logger.Logger.Error("Failed to delete DNS record", zap.String("status", resp.Status))
+		return err
 	}
 
 	return nil
@@ -249,8 +276,9 @@ func CheckAndUpdateDNSRecord(apiKey string, zone *ResourceContainer, record DNSR
 	// Check if the DNS record needs to be updated
 	getRecord, err := CFListDNSRecords(apiKey, zone)
 	if err != nil {
-		log.Fatalf("Error listing DNS records: %v\n", err)
+		logger.Logger.Fatal("Error listing DNS records", zap.Error(err))
 	}
+
 	var recordID string
 	var recordName string
 	for _, r := range getRecord.Result {
@@ -260,34 +288,43 @@ func CheckAndUpdateDNSRecord(apiKey string, zone *ResourceContainer, record DNSR
 			break
 		}
 	}
+
 	if recordID == "" {
 		// Create the DNS record if it doesn't exist
 		err := CFCreateDNSRecord(apiKey, zone, record)
 		if err != nil {
-			log.Fatalf("Error creating DNS record: %v\n", err)
+			logger.Logger.Fatal("Error creating DNS record", zap.Error(err))
 		}
-		fmt.Printf("DNS record %s created successfully!\n", record.Name)
+		logger.Logger.Info("DNS record created successfully", zap.String("record_name", record.Name))
 		return
 	}
+
 	// If the record exists, check if it needs to be updated
 	// Get the current content of the DNS record
 	resultById, err := CFListDNSRecordById(apiKey, zone, recordID)
 	if err != nil {
-		log.Fatalf("Error listing DNS record by ID: %v\n", err)
+		logger.Logger.Fatal("Error listing DNS record by ID", zap.Error(err))
 	}
+
 	currentContent := resultById.Result.Content
-	CurrentPublicIP := GetPublicIP()
-	// Compare the current content with the new content
-	if currentContent == CurrentPublicIP {
-		fmt.Printf("No update needed for DNS record %s.\n", recordName)
+	CurrentPublicIP, err := GetPublicIP()
+	if err != nil {
+		logger.Logger.Error("Failed to get public IP", zap.Error(err))
 		return
 	}
+
+	if currentContent == CurrentPublicIP {
+		logger.Logger.Info("No update needed for DNS record", zap.String("record_name", recordName))
+		return
+	}
+
 	if currentContent != CurrentPublicIP {
 		// Update the DNS record
 		err := CFUpdateDNSRecord(apiKey, zone, recordName, recordID, CurrentPublicIP)
 		if err != nil {
-			log.Fatalf("Error updating DNS record: %v\n", err)
+			logger.Logger.Fatal("Error updating DNS record", zap.Error(err))
 		}
+		// logger.Logger.Info("DNS record updated successfully", zap.String("record_name", recordName), zap.String("new_content", CurrentPublicIP))
 	}
 }
 
@@ -296,7 +333,7 @@ func GetCredentialsFromSecret(clientset *kubernetes.Clientset) (string, string) 
 	secret, err := clientset.CoreV1().Secrets("kubehomedns").Get(ctx, "cloudflare-credentials", metav1.GetOptions{})
 	defer cancel()
 	if err != nil {
-		fmt.Printf("Error retrieving secret: %v\n", err)
+		logger.Logger.Fatal("Error retrieving secret", zap.Error(err))
 		return "", ""
 	}
 
@@ -326,18 +363,19 @@ func InitialClientSet() *kubernetes.Clientset {
 
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
-		fmt.Printf("error getting cluster config from flags: %s\n", err.Error())
+		logger.Logger.Error("Error getting cluster config from flags", zap.Error(err))
 		config, err = rest.InClusterConfig()
 		if err != nil {
-			panic(fmt.Sprintf("error getting cluster config from inCluster: %s\n", err.Error()))
+			logger.Logger.Fatal("Error getting cluster config from in-cluster", zap.Error(err))
 		}
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		panic(err.Error())
+		logger.Logger.Fatal("Error creating Kubernetes clientset", zap.Error(err))
 	}
 
+	logger.Logger.Info("Kubernetes clientset created successfully!")
 	return clientset
 }
 
@@ -349,7 +387,7 @@ func watchIngresses(clientset *kubernetes.Clientset, cloudflareAPIKey, cloudflar
 		cancel()
 
 		if err != nil {
-			fmt.Printf("Error listing ingresses: %v\n", err)
+			logger.Logger.Error("Error listing ingresses", zap.Error(err))
 			time.Sleep(10 * time.Second)
 			continue
 		}
@@ -362,7 +400,7 @@ func watchIngresses(clientset *kubernetes.Clientset, cloudflareAPIKey, cloudflar
 				}
 			}
 		} else {
-			fmt.Println("No ingress found")
+			logger.Logger.Info("No ingress found")
 		}
 
 		time.Sleep(1800 * time.Second)
@@ -377,7 +415,7 @@ func watchIngLabels(clientset *kubernetes.Clientset, cloudflareAPIKey, cloudflar
 		cancel()
 
 		if err != nil {
-			fmt.Printf("Error listing ingresses: %v\n", err)
+			logger.Logger.Error("Error listing ingresses", zap.Error(err))
 			time.Sleep(10 * time.Second)
 			continue
 		}
@@ -390,15 +428,21 @@ func watchIngLabels(clientset *kubernetes.Clientset, cloudflareAPIKey, cloudflar
 				delete(ingress.Labels, "kubehomedns")
 				_, err := clientset.NetworkingV1().Ingresses(ingress.Namespace).Update(context.Background(), &ingress, metav1.UpdateOptions{})
 				if err != nil {
-					fmt.Printf("Error updating ingress labels: %v\n", err)
+					logger.Logger.Error("Error updating ingress labels", zap.Error(err))
 				}
 			}
 		}
 		time.Sleep(120 * time.Second)
 	}
 }
-
 func main() {
+	if err := logger.Init(); err != nil {
+		panic(err)
+	}
+	defer logger.Sync()
+
+	logger.Logger.Info("Kubehomedns has started!")
+
 	clientset := InitialClientSet()
 
 	cloudflareAPIKey, cloudflareZoneID := GetCredentialsFromSecret(clientset)
